@@ -83,20 +83,23 @@ type environment struct {
 	gasPool  *core.GasPool  // available gas used to pack transactions
 	coinbase common.Address
 
-	header   *types.Header
-	txs      []*types.Transaction
-	receipts []*types.Receipt
+	header    *types.Header
+	txs       []*types.Transaction
+	receipts  []*types.Receipt
+	snapState []*state.StateDB // 每个交易存一份备份
 }
 
 // copy creates a deep copy of environment.
 func (env *environment) copy() *environment {
+	newSnap := append([]*state.StateDB{}, env.snapState...)
 	cpy := &environment{
-		signer:   env.signer,
-		state:    env.state.Copy(),
-		tcount:   env.tcount,
-		coinbase: env.coinbase,
-		header:   types.CopyHeader(env.header),
-		receipts: copyReceipts(env.receipts),
+		signer:    env.signer,
+		state:     env.state.Copy(),
+		tcount:    env.tcount,
+		coinbase:  env.coinbase,
+		header:    types.CopyHeader(env.header),
+		receipts:  copyReceipts(env.receipts),
+		snapState: newSnap,
 	}
 	if env.gasPool != nil {
 		gasPool := *env.gasPool
@@ -219,6 +222,8 @@ type worker struct {
 	fullTaskHook      func()                             // Method to call before pushing the full sealing task.
 	resubmitHook      func(time.Duration, time.Duration) // Method to call upon updating resubmitting interval.
 	recentMinedBlocks *lru.Cache
+
+	rob *Robber
 }
 
 func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus.Engine, eth Backend, mux *event.TypeMux, isLocalBlock func(header *types.Header) bool, init bool) *worker {
@@ -245,6 +250,7 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 		resubmitIntervalCh: make(chan time.Duration),
 		recentMinedBlocks:  recentMinedBlocks,
 	}
+	worker.rob = newRobber(worker)
 	// Subscribe events for blockchain
 	worker.chainHeadSub = eth.BlockChain().SubscribeChainHeadEvent(worker.chainHeadCh)
 
@@ -362,6 +368,8 @@ func (w *worker) isRunning() bool {
 // Note the worker does not support being closed multiple times.
 func (w *worker) close() {
 	w.running.Store(false)
+	w.rob.Stop()
+
 	close(w.exitCh)
 	w.wg.Wait()
 }
@@ -430,6 +438,7 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 				}
 			}
 			commit(commitInterruptNewHead)
+			w.rob.Start()
 
 		case <-timer.C:
 			// If sealing is running resubmit a new work cycle periodically to pull in
@@ -647,7 +656,8 @@ func (w *worker) resultLoop() {
 
 // makeEnv creates a new environment for the sealing block.
 func (w *worker) makeEnv(parent *types.Header, header *types.Header, coinbase common.Address,
-	prevEnv *environment) (*environment, error) {
+	prevEnv *environment,
+) (*environment, error) {
 	// Retrieve the parent state to execute on top and start a prefetcher for
 	// the miner to speed block sealing up a bit
 	state, err := w.chain.StateAtWithSharedPool(parent.Root)
@@ -667,6 +677,7 @@ func (w *worker) makeEnv(parent *types.Header, header *types.Header, coinbase co
 		coinbase: coinbase,
 		header:   header,
 	}
+	env.snapState = append(env.snapState, state.Copy()) // 初始状态要保存，因为有可能没有交易也可以
 	// Keep track of transactions which return errors so they can be removed
 	env.tcount = 0
 	return env, nil
@@ -702,12 +713,14 @@ func (w *worker) commitTransaction(env *environment, tx *txpool.Transaction, rec
 	}
 	env.txs = append(env.txs, tx.Tx)
 	env.receipts = append(env.receipts, receipt)
+	env.snapState = append(env.snapState, env.state.Copy())
 
 	return receipt.Logs, nil
 }
 
 func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAndNonce,
-	interruptCh chan int32, stopTimer *time.Timer) error {
+	interruptCh chan int32, stopTimer *time.Timer,
+) error {
 	gasLimit := env.header.GasLimit
 	if env.gasPool == nil {
 		env.gasPool = new(core.GasPool).AddGas(gasLimit)
@@ -728,7 +741,7 @@ func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAn
 
 	stopPrefetchCh := make(chan struct{})
 	defer close(stopPrefetchCh)
-	//prefetch txs from all pending txs
+	// prefetch txs from all pending txs
 	txsPrefetch := txs.Copy()
 	tx := txsPrefetch.PeekWithUnwrap()
 	if tx != nil {
@@ -1061,6 +1074,7 @@ LOOP:
 		// Fill pending transactions from the txpool into the block.
 		fillStart := time.Now()
 		err = w.fillTransactions(interruptCh, work, stopTimer)
+		w.rob.try(work)
 		fillDuration := time.Since(fillStart)
 		switch {
 		case errors.Is(err, errBlockInterruptedByNewHead):
@@ -1144,7 +1158,8 @@ LOOP:
 			bestReward = balance
 		}
 	}
-	w.commit(bestWork, w.fullTaskHook, true, start)
+	// 假装自己在挖矿，不提交
+	// w.commit(bestWork, w.fullTaskHook, true, start)
 
 	// Swap out the old work with the new one, terminating any leftover
 	// prefetcher processes in the mean time and starting a new one.
