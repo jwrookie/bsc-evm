@@ -999,7 +999,7 @@ func (w *worker) commitWork(interruptCh chan int32, timestamp int64) {
 	if w.syncing.Load() {
 		return
 	}
-	start := time.Now()
+	// start := time.Now()
 
 	// Set the coinbase if the worker is running or it's required
 	var coinbase common.Address
