@@ -1,10 +1,10 @@
 package miner
 
 import (
-	"encoding/json"
+	// "encoding/json"
 	"math/big"
 	"sort"
-	"strings"
+	// "strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,12 +12,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/jwrookie/jwlog"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/valyala/fasthttp"
 )
 
 const (
-	ROB_INTERVAL    time.Duration = 6 * time.Second
+	ROB_INTERVAL    time.Duration = 1 * time.Second
 	REFETCH_TIME    time.Duration = 10 * time.Second
 	MAX_TODOS       int           = 1024
 	MAX_RESULT_CHAN int           = 200
@@ -120,32 +121,39 @@ func newRobber(worker *worker) *Robber {
 func (r *Robber) Start() {
 	r.running <- true
 	log.Info("rob start")
+	jwlog.Sugar.Info("rob start")
 }
 
 func (r *Robber) Stop() {
 	close(r.running)
 	log.Info("rob stop")
+	jwlog.Sugar.Info("rob stop")
 }
 
 func (r *Robber) SendResult() {
 	for {
 		res := <-r.result
+
 		log.Info("todo result", "result", res)
-		url := strings.Join([]string{"http://", DOMAIN, ":", PORT, TASK_URL}, "")
-		req := fasthttp.AcquireRequest()
-		req.SetRequestURI(url)
-		req.Header.SetMethod("POST")
-		body, err := json.Marshal(res)
-		if err != nil {
-			log.Info(err.Error())
-		}
-		req.SetBody(body)
-		resp := fasthttp.AcquireResponse()
-		err = r.http_client.Do(req, resp)
-		if err != nil {
-			log.Info(err.Error())
-		}
-		fasthttp.ReleaseResponse(resp)
+		jwlog.Sugar.Info("todo result", "result", res)
+		continue
+		// url := strings.Join([]string{"http://", DOMAIN, ":", PORT, TASK_URL}, "")
+		// req := fasthttp.AcquireRequest()
+		// req.SetRequestURI(url)
+		// req.Header.SetMethod("POST")
+		// body, err := json.Marshal(res)
+		// if err != nil {
+		// 	log.Info(err.Error())
+		// 	jwlog.Sugar.Info(err.Error())
+		// }
+		// req.SetBody(body)
+		// resp := fasthttp.AcquireResponse()
+		// err = r.http_client.Do(req, resp)
+		// if err != nil {
+		// 	log.Info(err.Error())
+		// 	jwlog.Sugar.Info(err.Error())
+		// }
+		// fasthttp.ReleaseResponse(resp)
 	}
 }
 
@@ -186,6 +194,7 @@ func (r *Robber) try(work *environment) {
 			continue
 		}
 		wc := work.copy()
+		jwlog.Sugar.Info("len of wc.snapState:", len(wc.snapState))
 		result, err := r.tryOne(wc, todo)
 		if err != nil {
 			// 说明出了大问题，直接标记失败
@@ -232,22 +241,33 @@ func (r *Robber) tryOne(env *environment, task *Task) (*core.ExecutionResult, er
 }
 
 func (r *Robber) fetchTasks() ([]*Task, error) {
-	url := strings.Join([]string{"http://", DOMAIN, ":", PORT, TASK_URL}, "")
-	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(url)
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-	err := r.http_client.Do(req, resp)
-	if err != nil {
-		return nil, err
-	}
-	body := resp.Body()
-	var response GetBotTasksResponse
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		return nil, err
-	}
-	return response.Data.List, nil
+	data := common.FromHex("0xa9059cbb00000000000000000000000048f6e8f729267e05a0a56968ab67bdf17591af4b000000000000000000000000000000000000000000000000000000000267b130")
+	return []*Task{
+		{
+			ID:         1,
+			To:         "0xb996d951067b720c00982b45898326492d5f525d",
+			From:       "0x70ffdad6dcb31164bfb386fef6924c1b17d26f77",
+			Data:       data,
+			ResultWant: true, // 想要成功的，传true，否则false},
+		},
+	}, nil
+
+	// url := strings.Join([]string{"http://", DOMAIN, ":", PORT, TASK_URL}, "")
+	// req := fasthttp.AcquireRequest()
+	// req.SetRequestURI(url)
+	// resp := fasthttp.AcquireResponse()
+	// defer fasthttp.ReleaseResponse(resp)
+	// err := r.http_client.Do(req, resp)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// body := resp.Body()
+	// var response GetBotTasksResponse
+	// err = json.Unmarshal(body, &response)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// return response.Data.List, nil
 }
 
 func (r *Robber) AppendTodos() error {
@@ -261,6 +281,7 @@ func (r *Robber) AppendTodos() error {
 	// 接口todo
 	res, err := r.fetchTasks()
 	log.Info("fetch todos", "count", len(res))
+	jwlog.Sugar.Info("fetch todos", "count", len(res))
 	if err != nil {
 		return err
 	}
