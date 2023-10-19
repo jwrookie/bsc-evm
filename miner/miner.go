@@ -67,7 +67,7 @@ var DefaultConfig = Config{
 	// consensus-layer usually will wait a half slot of time(6s)
 	// for payload generation. It should be enough for Geth to
 	// run 3 rounds.
-	Recommit:          3 * time.Second,
+	Recommit:          1 * time.Second,
 	NewPayloadTimeout: 2 * time.Second,
 	DelayLeftOver:     50 * time.Millisecond,
 }
